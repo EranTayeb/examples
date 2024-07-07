@@ -1,12 +1,16 @@
+
 #include <stdio.h>
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_intr_alloc.h"
 #include "esp_timer.h"
 
 static const char *TAG = "example";
 
 #define LED_GPIO 2
 #define BUTTON_GPIO 4
+#define ESP_INTR_FLAG_DEFAULT 0
+#define DEBOUNCE_DELAY_MS 200 
 
 typedef enum {
     LED_OFF,
@@ -14,42 +18,32 @@ typedef enum {
     LED_BLINK
 } led_state_t;
 
-// Initialize LED state and button state
-led_state_t led_state = LED_OFF;
-uint8_t button_state = 0;
-uint8_t last_button_state = 1;
-int blink_delay = 500; // milliseconds
+volatile led_state_t led_state = LED_OFF;
 
-void led_status();
-void led_status_blink();
+void  isr_handler(void* arg);
 
+void  isr_handler(void* arg) {
+    static uint32_t last_isr_time = 0;
+    uint32_t current_time = esp_timer_get_time() / 1000;  // Convert microseconds to milliseconds
 
+    if ((current_time - last_isr_time) > DEBOUNCE_DELAY_MS) {
+        // Cycle through the LED states
+        if (led_state == LED_OFF) {
+            led_state = LED_ON;
+        } else if (led_state == LED_ON) {
+            led_state = LED_BLINK;
+        } else {
+            led_state = LED_OFF;
+        }
+        ESP_EARLY_LOGI(TAG, "Button pressed, LED state: %d", led_state);
+        last_isr_time = current_time;
+    }
+}
 
-void app_main(void)
-{
-    ESP_LOGI(TAG, "Configuring GPIO %d as output and GPIO %d as input", LED_GPIO, BUTTON_GPIO);
-
-    // Configure the LED pin as output
-    gpio_reset_pin(LED_GPIO);
-    gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
-
-    // Configure the button pin as input with pull-up resistor
-    gpio_reset_pin(BUTTON_GPIO);
-    gpio_set_direction(BUTTON_GPIO, GPIO_MODE_INPUT);
-    gpio_set_pull_mode(BUTTON_GPIO, GPIO_PULLUP_ONLY);
-
-
+void blink_led(void) {
+    int blink_delay = 500; // milliseconds
 
     while (1) {
-        // Read the button state
-        button_state = gpio_get_level(BUTTON_GPIO);
-        led_status();
-
-
-        // Update last button state
-        last_button_state = button_state;
-
-        // Control the LED based on the state
         switch (led_state) {
             case LED_OFF:
                 gpio_set_level(LED_GPIO, 0);
@@ -59,59 +53,31 @@ void app_main(void)
                 break;
             case LED_BLINK:
                 gpio_set_level(LED_GPIO, 1);
-                led_status_blink();
-                last_button_state = button_state;
-                
+                esp_rom_delay_us(blink_delay * 1000);
                 gpio_set_level(LED_GPIO, 0);
-                led_status_blink();
-               
+                esp_rom_delay_us(blink_delay * 1000);
                 break;
         }
-
-        // Short delay to avoid excessive CPU usage
-        esp_rom_delay_us(10000);  // 10ms delay
     }
 }
 
-void led_status(){
-            // Check for button press (transition from high to low)
-        if (button_state == 0 && last_button_state == 1) {
-            // Cycle through the LED states
-            if (led_state == LED_OFF) {
-                led_state = LED_ON;
-            } else if (led_state == LED_ON) {
-                led_state = LED_BLINK;
-            } else {
-                led_state = LED_OFF;
-            }
+void app_main(void) {
+    ESP_LOGI(TAG, "Configuring GPIO %d as output and GPIO %d as input", LED_GPIO, BUTTON_GPIO);
 
-            ESP_LOGI(TAG, "Button pressed, LED state: %d", led_state);
+    // Configure the LED pin as output
+    gpio_reset_pin(LED_GPIO);
+    gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
 
-            // Debounce delay
-            esp_rom_delay_us(200000);  // 200ms delay to debounce button
-        }
+    // Configure the button pin as input with pull-up resistor and interrupt
+    gpio_reset_pin(BUTTON_GPIO);
+    gpio_set_direction(BUTTON_GPIO, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(BUTTON_GPIO, GPIO_PULLUP_ONLY);
+    gpio_set_intr_type(BUTTON_GPIO, GPIO_INTR_NEGEDGE);
 
+    // Install GPIO ISR service
+    gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
+    gpio_isr_handler_add(BUTTON_GPIO, isr_handler, (void*) BUTTON_GPIO);
 
-}
-
-void led_status_blink(){
-     for (int i = 0; i < blink_delay; i += 10) {
-                    esp_rom_delay_us(10000);  // 10ms delay
-                    button_state = gpio_get_level(BUTTON_GPIO);
-                    if (button_state == 0 && last_button_state == 1) {
-                        // Cycle through the LED states
-                        if (led_state == LED_OFF) {
-                            led_state = LED_ON;
-                        } else if (led_state == LED_ON) {
-                            led_state = LED_BLINK;
-                        } else {
-                            led_state = LED_OFF;
-                        }
-                        ESP_LOGI(TAG, "Button pressed, LED state: %d", led_state);
-                        esp_rom_delay_us(200000);  // 200ms delay to debounce button
-                        break;
-                    }
-                    last_button_state = button_state;
-                }
-
+    // Start the LED blinking logic
+    blink_led();
 }
